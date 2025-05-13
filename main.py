@@ -118,12 +118,12 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                     
                     # --- Extract Seat Information ---
                     seat_info_lines = []
-                    listing_id = offer.get('listingId')
+                    offer_id_to_match = offer.get('id') # Use the 'id' from the offer, not 'listingId'
                     groups_data = data.get('groups', [])
                     
-                    if listing_id:
+                    if offer_id_to_match:
                         for group in groups_data:
-                            if listing_id in group.get('offerIds', []):
+                            if offer_id_to_match in group.get('offerIds', []): # Match offer 'id' with 'offerIds' in group
                                 places = group.get('places', {})
                                 if places:
                                     # Assuming one place entry per matching group for simplicity, as per example
