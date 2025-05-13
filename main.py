@@ -97,18 +97,58 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                             total_price_raw = price_info['total']
                             if isinstance(total_price_raw, (int, float)):
                                 calculated_price_val = total_price_raw / 100
-                                calculated_price_str = f"{calculated_price_val:.2f}"
+                                # Price condition check
+                                if calculated_price_val < 400.00:
+                                    calculated_price_str = f"{calculated_price_val:.2f}"
+                                else:
+                                    logging.info(f"Offer price {calculated_price_val:.2f} for event {event_id} is >= 400.00. Skipping message.")
+                                    continue # Skip to the next offer
                             else:
                                 calculated_price_str = f"Invalid format ({total_price_raw})"
+                                logging.warning(f"Price format invalid for offer in event {event_id}. Skipping message for this offer.")
+                                continue # Skip to the next offer
                         except (ValueError, TypeError, KeyError) as e:
                             calculated_price_str = f"Error processing"
+                            logging.error(f"Error processing price for offer in event {event_id}: {e}. Skipping message for this offer.")
+                            continue # Skip to the next offer
+                    else: # No price info or total
+                        logging.warning(f"No price/total found for offer in event {event_id}. Skipping message for this offer.")
+                        continue # Skip to the next offer
                     
+                    # --- Extract Seat Information ---
+                    seat_info_lines = []
+                    listing_id = offer.get('listingId')
+                    groups_data = data.get('groups', [])
+                    
+                    if listing_id:
+                        for group in groups_data:
+                            if listing_id in group.get('offerIds', []):
+                                places = group.get('places', {})
+                                if places:
+                                    # Assuming one place entry per matching group for simplicity, as per example
+                                    for place_key, row_data in places.items(): # e.g., place_key = "M-217"
+                                        sector = place_key.split('-')[-1] if '-' in place_key else place_key
+                                        seat_info_lines.append(f"SECTOR: {sector}")
+                                        if isinstance(row_data, dict):
+                                            for row_number, seat_list in row_data.items(): # e.g., row_number = "4"
+                                                seat_info_lines.append(f"FILA: {row_number}")
+                                                if isinstance(seat_list, list) and seat_list:
+                                                    # Join multiple seats if present, or take the first
+                                                    asientos_str = ", ".join(seat_list)
+                                                    seat_info_lines.append(f"ASIENTO: {asientos_str}")
+                                                break # Assuming one row per place for this offer
+                                        break # Assuming one place structure per group for this offer
+                                break # Found matching group
+
                     message_lines = [
                         f"ENTRADA: {offer_type_description}",
                         f"DIA: {event_date_str}",
                         f"PRECIO: {calculated_price_str}.",
-                        f"LINK: https://www.ticketmaster.es/event/{event_id}"
                     ]
+                    if seat_info_lines:
+                        message_lines.extend(seat_info_lines)
+                    message_lines.append(f"LINK: https://www.ticketmaster.es/event/{event_id}")
+
                     message_to_send = "\n".join(message_lines)
                     await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send)
                     
