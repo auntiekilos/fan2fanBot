@@ -30,8 +30,8 @@ MAX_DELAY = 9
 MAX_PRICE_THRESHOLD = 400.00 # <<< SET YOUR DESIRED MAX PRICE HERE
 # Telegram Configuration (to be set via environment variables)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# --- Database for Seen Offers ---
+# TELEGRAM_CHAT_IDS should be a comma-separated string of chat IDs, e.g., "123456789,987654321"
+TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_IDS") 
 # Path inside the container where the seen offers data will be stored.
 SEEN_OFFERS_FILE_PATH = "/app/data/seen_offers.json" # Ensure /app/data is a mounted volume in Docker
 seen_offer_ids = set()
@@ -91,19 +91,24 @@ def escape_markdown_v2(text):
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
 
 # --- Telegram Function ---
-async def send_telegram_message(bot_instance, chat_id, message_text):
-    """Sends a message via Telegram."""
+async def send_telegram_message_to_single_chat(bot_instance, chat_id, message_text):
+    """Sends a message via Telegram to a single chat_id."""
     if not bot_instance or not chat_id:
         logging.error("Telegram bot or chat_id not configured. Cannot send message.")
-        return
+        return False # Indicate failure
     try:
         # Capture the returned Message object
         sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text, parse_mode='MarkdownV2')
         # Log more details from the sent_message object
-        logging.info(f"Telegram API ACKNOWLEDGED sending message. Chat ID: {chat_id}, Message ID: {sent_message.message_id}, Chat Type: {sent_message.chat.type}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
+        logging.info(f"Telegram API ACKNOWLEDGED sending message to Chat ID: {chat_id}. Message ID: {sent_message.message_id}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
         return True # Indicate success
     except TelegramError as e: # Specific Telegram error
         logging.error(f"TelegramError sending message to {chat_id}: {e.message}")
+        # Check for common errors like bot blocked or chat not found
+        if "bot was blocked by the user" in str(e) or "chat not found" in str(e):
+            logging.warning(f"Bot may have been blocked or chat ID {chat_id} is invalid.")
+        elif "group chat was upgraded to a supergroup chat" in str(e):
+            logging.warning(f"Group chat {chat_id} was upgraded. New chat ID might be needed: {e.message}")
     except Exception as e: # Catch other potential errors during sending
         logging.error(f"Unexpected error sending Telegram message to {chat_id}: {e}")
     return False # Indicate failure
@@ -218,10 +223,15 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                     message_lines.append(f"*{escaped_price}€*")
 
                     message_to_send = "\n".join(message_lines)
-                    if await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send):
-                        if current_offer_id: # Ensure we have an ID to add
-                            seen_offer_ids.add(current_offer_id)
-                            save_seen_offers() # Save the updated list
+                    
+                    # Send to all configured chat IDs
+                    any_message_sent_successfully = False
+                    for chat_id_to_send_to in telegram_chat_id_to_send: # telegram_chat_id_to_send is now a list
+                        if await send_telegram_message_to_single_chat(bot_instance, chat_id_to_send_to, message_to_send):
+                            any_message_sent_successfully = True
+                    if any_message_sent_successfully and current_offer_id: # Only add to seen if sent to at least one
+                        seen_offer_ids.add(current_offer_id)
+                        save_seen_offers() # Save the updated list
                     
                     if len(offers_data) > 1 and i < len(offers_data) - 1:
                         await asyncio.sleep(1) # Use asyncio.sleep
@@ -240,9 +250,16 @@ async def main():
     if not TELEGRAM_BOT_TOKEN:
         logging.error("CRITICAL: TELEGRAM_BOT_TOKEN environment variable not set. Exiting.")
         exit(1)
-    if not TELEGRAM_CHAT_ID:
-        logging.error("CRITICAL: TELEGRAM_CHAT_ID environment variable not set. Exiting.")
+    if not TELEGRAM_CHAT_IDS_STR:
+        logging.error("CRITICAL: TELEGRAM_CHAT_IDS environment variable not set. Exiting.")
         exit(1)
+    
+    # Parse the comma-separated chat IDs into a list
+    telegram_chat_ids_list = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
+    if not telegram_chat_ids_list:
+        logging.error("CRITICAL: TELEGRAM_CHAT_IDS environment variable is set but contains no valid chat IDs after parsing. Exiting.")
+        exit(1)
+    logging.info(f"Target Telegram Chat IDs: {telegram_chat_ids_list}")
 
     if not EVENT_IDS or any(id_val in ["YOUR_EVENT_ID_1", "YOUR_EVENT_ID_2", "YOUR_EVENT_ID_3"] for id_val in EVENT_IDS):
         logging.warning("Please update the EVENT_IDS list with your actual event IDs.")
@@ -263,12 +280,13 @@ async def main():
 
     # --- TEST MESSAGE ON STARTUP & LOG CREDENTIALS ---
     # Log the first few and last few characters of the token to verify it's loaded, but not the whole thing for security.
-    token_preview = f"{TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}" if TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 10 else "Token not loaded or too short"
-    logging.info(f"Script using Token (preview): {token_preview}, Chat ID: {TELEGRAM_CHAT_ID}")
-    logging.info(f"Attempting to send a startup test message to chat ID {TELEGRAM_CHAT_ID}...")
+    token_preview = f"{TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}" if TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 10 else "Token not loaded or too short"    
+    logging.info(f"Script using Token (preview): {token_preview}")
     test_message_text = f"*Fan2Fan Bot Startup Test* `(async)`\nIf you see this, basic Telegram sending is working\nBot instance active: `{bot_instance is not None}`"
-    if await send_telegram_message(bot_instance, TELEGRAM_CHAT_ID, test_message_text):
-        logging.info("Startup test message function call completed.")
+    logging.info(f"Attempting to send startup test message to: {telegram_chat_ids_list}")
+    for chat_id_to_test in telegram_chat_ids_list:
+        if await send_telegram_message_to_single_chat(bot_instance, chat_id_to_test, test_message_text):
+            logging.info(f"Startup test message sent successfully to {chat_id_to_test}.")
     # --- END OF TEST MESSAGE ---
 
     while True:
@@ -280,7 +298,7 @@ async def main():
                     event_date_str = EVENT_DATES[index]
                     random_request_delay = random.uniform(MIN_DELAY, MAX_DELAY)
                     await asyncio.sleep(random_request_delay) # Use asyncio.sleep
-                    await check_api_for_event(bot_instance, TELEGRAM_CHAT_ID, event_id, event_date_str)
+                    await check_api_for_event(bot_instance, telegram_chat_ids_list, event_id, event_date_str) # Pass the list of chat IDs
             await asyncio.sleep(CHECK_INTERVAL_SECONDS) # Use asyncio.sleep
         except KeyboardInterrupt:
             logging.info("Script interrupted by user. Exiting...")
