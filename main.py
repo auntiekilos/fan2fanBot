@@ -26,9 +26,15 @@ CHECK_INTERVAL_SECONDS = 100  # <<< YOU CAN CHANGE THIS
 # Minimum and maximum delay (in seconds) to add *before* each request
 MIN_DELAY = 2
 MAX_DELAY = 9
+# Maximum price for an offer to be considered for notification
+MAX_PRICE_THRESHOLD = 400.00 # <<< SET YOUR DESIRED MAX PRICE HERE
 # Telegram Configuration (to be set via environment variables)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# --- Database for Seen Offers ---
+# Path inside the container where the seen offers data will be stored.
+SEEN_OFFERS_FILE_PATH = "/app/data/seen_offers.json" # Ensure /app/data is a mounted volume in Docker
+seen_offer_ids = set()
 
 # List of possible User-Agent strings to rotate through
 USER_AGENTS = [
@@ -41,6 +47,40 @@ USER_AGENTS = [
 # Configure logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Seen Offers Functions ---
+def load_seen_offers():
+    global seen_offer_ids
+    try:
+        if os.path.exists(SEEN_OFFERS_FILE_PATH):
+            with open(SEEN_OFFERS_FILE_PATH, 'r') as f:
+                loaded_ids = json.load(f)
+                if isinstance(loaded_ids, list):
+                    seen_offer_ids = set(loaded_ids)
+                    logging.info(f"Loaded {len(seen_offer_ids)} seen offer IDs from {SEEN_OFFERS_FILE_PATH}")
+                else:
+                    logging.warning(f"Content of {SEEN_OFFERS_FILE_PATH} is not a list. Starting with empty set.")
+                    seen_offer_ids = set()
+        else:
+            logging.info(f"{SEEN_OFFERS_FILE_PATH} not found. Starting with empty set of seen offers.")
+            seen_offer_ids = set()
+    except json.JSONDecodeError:
+        logging.error(f"Error decoding JSON from {SEEN_OFFERS_FILE_PATH}. Starting with empty set.")
+        seen_offer_ids = set()
+    except Exception as e:
+        logging.error(f"Error loading {SEEN_OFFERS_FILE_PATH}: {e}. Starting with empty set.")
+        seen_offer_ids = set()
+
+def save_seen_offers():
+    global seen_offer_ids
+    try:
+        directory = os.path.dirname(SEEN_OFFERS_FILE_PATH)
+        if not os.path.exists(directory):
+            os.makedirs(directory) # Create the directory if it doesn't exist
+        with open(SEEN_OFFERS_FILE_PATH, 'w') as f:
+            json.dump(list(seen_offer_ids), f, indent=2) # Save as a list for readability
+    except Exception as e:
+        logging.error(f"Error saving {SEEN_OFFERS_FILE_PATH}: {e}")
 
 # --- Telegram Function ---
 async def send_telegram_message(bot_instance, chat_id, message_text):
@@ -98,8 +138,8 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                             total_price_raw = price_info['total']
                             if isinstance(total_price_raw, (int, float)):
                                 calculated_price_val = total_price_raw / 100
-                                # Price condition check
-                                if calculated_price_val < 400.00:
+                                # Price condition check using the defined threshold
+                                if calculated_price_val < MAX_PRICE_THRESHOLD:
                                     calculated_price_str = f"{calculated_price_val:.2f}"
                                 else:
                                     logging.info(f"Offer price {calculated_price_val:.2f} for event {event_id} is >= 400.00. Skipping message.")
@@ -116,6 +156,12 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                         logging.warning(f"No price/total found for offer in event {event_id}. Skipping message for this offer.")
                         continue # Skip to the next offer
                     
+                    # --- Check if offer has already been seen ---
+                    current_offer_id = offer.get('id') # This is the unique ID for the offer
+                    if current_offer_id and current_offer_id in seen_offer_ids:
+                        logging.info(f"Offer ID {current_offer_id} for event {event_id} already seen. Skipping notification.")
+                        continue # Skip to the next offer
+
                     # --- Extract Seat Information ---
                     seat_info_lines = []
                     offer_id_to_match = offer.get('id') # Use the 'id' from the offer, not 'listingId'
@@ -153,7 +199,10 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                     message_lines.append(f"LINK: https://www.ticketmaster.es/event/{event_id}")
 
                     message_to_send = "\n".join(message_lines)
-                    await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send)
+                    if await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send):
+                        if current_offer_id: # Ensure we have an ID to add
+                            seen_offer_ids.add(current_offer_id)
+                            save_seen_offers() # Save the updated list
                     
                     if len(offers_data) > 1 and i < len(offers_data) - 1:
                         await asyncio.sleep(1) # Use asyncio.sleep
@@ -186,6 +235,9 @@ async def main():
         exit(1)
     logging.info(f"Event IDs to check: {EVENT_IDS}")
     logging.info(f"Looking for data different from: {json.dumps(EMPTY_RESPONSE)}")
+
+    # Load seen offers at startup
+    load_seen_offers()
 
     bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
     logging.info("Telegram Bot initialized.")
