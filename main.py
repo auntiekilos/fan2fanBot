@@ -82,6 +82,14 @@ def save_seen_offers():
     except Exception as e:
         logging.error(f"Error saving {SEEN_OFFERS_FILE_PATH}: {e}")
 
+# --- MarkdownV2 Escaping Function ---
+def escape_markdown_v2(text):
+    """Escapes special characters for Telegram MarkdownV2."""
+    if not isinstance(text, str): # Ensure text is a string
+        text = str(text)
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join(['\\' + char if char in escape_chars else char for char in text])
+
 # --- Telegram Function ---
 async def send_telegram_message(bot_instance, chat_id, message_text):
     """Sends a message via Telegram."""
@@ -90,7 +98,7 @@ async def send_telegram_message(bot_instance, chat_id, message_text):
         return
     try:
         # Capture the returned Message object
-        sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text)
+        sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text, parse_mode='MarkdownV2')
         # Log more details from the sent_message object
         logging.info(f"Telegram API ACKNOWLEDGED sending message. Chat ID: {chat_id}, Message ID: {sent_message.message_id}, Chat Type: {sent_message.chat.type}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
         return True # Indicate success
@@ -179,24 +187,35 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                                         sector = match.group(0) if match else place_key # Fallback to full key if no numeric part found
                                         seat_info_lines.append(f"SECTOR: {sector}")
                                         if isinstance(row_data, dict):
-                                            for row_number, seat_list in row_data.items(): # e.g., row_number = "4"
-                                                seat_info_lines.append(f"FILA: {row_number}")
+                                            for row_num_str, seat_list in row_data.items(): # e.g., row_number = "4"
+                                                seat_info_lines.append(f"FILA: {row_num_str}")
                                                 if isinstance(seat_list, list) and seat_list:
                                                     # Join multiple seats if present, or take the first
-                                                    asientos_str = ", ".join(seat_list)
+                                                    asientos_str = escape_markdown_v2(", ".join(seat_list))
                                                     seat_info_lines.append(f"ASIENTO: {asientos_str}")
                                                 break # Assuming one row per place for this offer
                                         break # Assuming one place structure per group for this offer
                                 break # Found matching group
 
+                    # Escape dynamic content for MarkdownV2
+                    escaped_offer_type = escape_markdown_v2(offer_type_description)
+                    escaped_date = escape_markdown_v2(event_date_str)
+                    escaped_price = escape_markdown_v2(calculated_price_str)
+                    event_link = f"https://www.ticketmaster.es/event/{event_id}"
+
+                    # Construct the message header
+                    header_line = f"*{escaped_offer_type}* [{escaped_date}]({event_link})" # Date as hyperlink
+
                     message_lines = [
-                        f"ENTRADA: {offer_type_description}",
-                        f"DIA: {event_date_str}",
-                        f"PRECIO: {calculated_price_str}.",
+                        header_line,
+                        "" # Blank line
                     ]
+
                     if seat_info_lines:
-                        message_lines.extend(seat_info_lines)
-                    message_lines.append(f"LINK: https://www.ticketmaster.es/event/{event_id}")
+                        message_lines.extend([escape_markdown_v2(line) for line in seat_info_lines]) # Escape each seat info line
+                    
+                    message_lines.append("") # Blank line
+                    message_lines.append(f"*{escaped_price}€*")
 
                     message_to_send = "\n".join(message_lines)
                     if await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send):
@@ -247,7 +266,7 @@ async def main():
     token_preview = f"{TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}" if TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 10 else "Token not loaded or too short"
     logging.info(f"Script using Token (preview): {token_preview}, Chat ID: {TELEGRAM_CHAT_ID}")
     logging.info(f"Attempting to send a startup test message to chat ID {TELEGRAM_CHAT_ID}...")
-    test_message_text = f"Fan2Fan Bot (in Docker) Startup Test (async). If you see this, basic Telegram sending is working. Bot instance: {bot_instance is not None}"
+    test_message_text = f"*Fan2Fan Bot Startup Test* `(async)`\nIf you see this, basic Telegram sending is working\nBot instance active: `{bot_instance is not None}`"
     if await send_telegram_message(bot_instance, TELEGRAM_CHAT_ID, test_message_text):
         logging.info("Startup test message function call completed.")
     # --- END OF TEST MESSAGE ---
