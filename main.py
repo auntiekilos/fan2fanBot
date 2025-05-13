@@ -5,6 +5,7 @@ import logging
 import random
 import os # For environment variables
 import asyncio # Import asyncio
+import re # Import regular expressions
 from telegram import Bot
 from telegram.error import TelegramError # Correct import for error handling
 
@@ -127,7 +128,9 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                                 if places:
                                     # Assuming one place entry per matching group for simplicity, as per example
                                     for place_key, row_data in places.items(): # e.g., place_key = "M-217"
-                                        sector = place_key.split('-')[-1] if '-' in place_key else place_key
+                                        # Extract sector: find the first digit and everything after that looks like part of an identifier
+                                        match = re.search(r'\d[\d\w-]*', place_key)
+                                        sector = match.group(0) if match else place_key # Fallback to full key if no numeric part found
                                         seat_info_lines.append(f"SECTOR: {sector}")
                                         if isinstance(row_data, dict):
                                             for row_number, seat_list in row_data.items(): # e.g., row_number = "4"
