@@ -4,6 +4,7 @@ import json # Import the json library
 import logging
 import random
 import os # For environment variables
+import asyncio # Import asyncio
 from telegram import Bot
 from telegram.error import TelegramError # Correct import for error handling
 
@@ -41,14 +42,14 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Telegram Function ---
-def send_telegram_message(bot_instance, chat_id, message_text):
+async def send_telegram_message(bot_instance, chat_id, message_text):
     """Sends a message via Telegram."""
     if not bot_instance or not chat_id:
         logging.error("Telegram bot or chat_id not configured. Cannot send message.")
         return
     try:
         # Capture the returned Message object
-        sent_message = bot_instance.send_message(chat_id=chat_id, text=message_text)
+        sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text)
         # Log more details from the sent_message object
         logging.info(f"Telegram API ACKNOWLEDGED sending message. Chat ID: {chat_id}, Message ID: {sent_message.message_id}, Chat Type: {sent_message.chat.type}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
         return True # Indicate success
@@ -59,7 +60,7 @@ def send_telegram_message(bot_instance, chat_id, message_text):
     return False # Indicate failure
 
 # --- API Check Function ---
-def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, event_date_str):
+async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, event_date_str):
     """
     Fetches data from the API endpoint for a specific event_id,
     parses the JSON response,
@@ -73,6 +74,7 @@ def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, event_
             'Accept-Language': 'en-US,en;q=0.5',
             'Connection': 'keep-alive',
         }
+        # requests.get is a blocking call. In a fully async app, you'd use aiohttp or run this in an executor.
         response = requests.get(current_api_url, headers=headers, timeout=30)
         response.raise_for_status()
 
@@ -108,10 +110,10 @@ def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, event_
                         f"LINK: https://www.ticketmaster.es/event/{event_id}"
                     ]
                     message_to_send = "\n".join(message_lines)
-                    send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send)
+                    await send_telegram_message(bot_instance, telegram_chat_id_to_send, message_to_send)
                     
                     if len(offers_data) > 1 and i < len(offers_data) - 1:
-                        time.sleep(1)
+                        await asyncio.sleep(1) # Use asyncio.sleep
             elif data != EMPTY_RESPONSE:
                 logging.warning(f"Data found for event ID {event_id} (linked to date {event_date_str}), but no 'offers' array or it's empty. Raw data structure: {json.dumps(data)}")
     except requests.exceptions.RequestException as e:
@@ -120,8 +122,8 @@ def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, event_
     except Exception as e:
         logging.error(f"An unexpected error occurred while processing event ID {event_id} (date {event_date_str}): {e}")
 
-# --- Main Loop ---
-if __name__ == "__main__":
+# --- Main Async Function ---
+async def main():
     logging.info("Starting API checker script...")
 
     if not TELEGRAM_BOT_TOKEN:
@@ -150,8 +152,8 @@ if __name__ == "__main__":
     token_preview = f"{TELEGRAM_BOT_TOKEN[:5]}...{TELEGRAM_BOT_TOKEN[-5:]}" if TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 10 else "Token not loaded or too short"
     logging.info(f"Script using Token (preview): {token_preview}, Chat ID: {TELEGRAM_CHAT_ID}")
     logging.info(f"Attempting to send a startup test message to chat ID {TELEGRAM_CHAT_ID}...")
-    test_message_text = f"Fan2Fan Bot (in Docker) Startup Test. If you see this, basic Telegram sending is working. Bot instance: {bot_instance is not None}"
-    if send_telegram_message(bot_instance, TELEGRAM_CHAT_ID, test_message_text):
+    test_message_text = f"Fan2Fan Bot (in Docker) Startup Test (async). If you see this, basic Telegram sending is working. Bot instance: {bot_instance is not None}"
+    if await send_telegram_message(bot_instance, TELEGRAM_CHAT_ID, test_message_text):
         logging.info("Startup test message function call completed.")
     # --- END OF TEST MESSAGE ---
 
@@ -163,13 +165,17 @@ if __name__ == "__main__":
                 for index, event_id in enumerate(EVENT_IDS):
                     event_date_str = EVENT_DATES[index]
                     random_request_delay = random.uniform(MIN_DELAY, MAX_DELAY)
-                    time.sleep(random_request_delay)
-                    check_api_for_event(bot_instance, TELEGRAM_CHAT_ID, event_id, event_date_str)
-            time.sleep(CHECK_INTERVAL_SECONDS)
+                    await asyncio.sleep(random_request_delay) # Use asyncio.sleep
+                    await check_api_for_event(bot_instance, TELEGRAM_CHAT_ID, event_id, event_date_str)
+            await asyncio.sleep(CHECK_INTERVAL_SECONDS) # Use asyncio.sleep
         except KeyboardInterrupt:
             logging.info("Script interrupted by user. Exiting...")
             break
         except Exception as e:
             logging.error(f"An error occurred in the main loop: {e}")
             logging.info(f"Waiting for {CHECK_INTERVAL_SECONDS} seconds before retrying...")
-            time.sleep(CHECK_INTERVAL_SECONDS)
+            await asyncio.sleep(CHECK_INTERVAL_SECONDS) # Use asyncio.sleep
+
+# --- Entry Point ---
+if __name__ == "__main__":
+    asyncio.run(main())
