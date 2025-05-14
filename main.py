@@ -28,6 +28,7 @@ MIN_DELAY = 2
 MAX_DELAY = 9
 # Maximum price for an offer to be considered for notification
 MAX_PRICE_THRESHOLD = 400.00 # <<< SET YOUR DESIRED MAX PRICE HERE
+SOURCES_DIR = "/app/sources" # Directory for images (pista.jpg, golden.jpg, 100.jpg, etc.)
 # Telegram Configuration (to be set via environment variables)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # TELEGRAM_CHAT_IDS should be a comma-separated string of chat IDs, e.g., "123456789,987654321"
@@ -91,23 +92,34 @@ def escape_markdown_v2(text):
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
 
 # --- Telegram Function ---
-async def send_telegram_message_to_single_chat(bot_instance, chat_id, message_text):
-    """Sends a message via Telegram to a single chat_id."""
+async def send_telegram_message_to_single_chat(bot_instance, chat_id, message_text, photo_path=None):
+    """Sends a message (text or photo with caption) via Telegram to a single chat_id."""
     if not bot_instance or not chat_id:
         logging.error("Telegram bot or chat_id not configured. Cannot send message.")
         return False # Indicate failure
     try:
-        # Capture the returned Message object
-        sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text, parse_mode='MarkdownV2')
-        # Log more details from the sent_message object
-        logging.info(f"Telegram API ACKNOWLEDGED sending message to Chat ID: {chat_id}. Message ID: {sent_message.message_id}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
+        if photo_path and os.path.exists(photo_path):
+            with open(photo_path, 'rb') as photo_file:
+                sent_message = await bot_instance.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_file,
+                    caption=message_text,
+                    parse_mode='MarkdownV2'
+                )
+            logging.info(f"Telegram API ACKNOWLEDGED sending PHOTO to Chat ID: {chat_id}. Message ID: {sent_message.message_id}, Caption: \"{sent_message.caption[:50].replace(chr(10), ' ')}...\"")
+        else:
+            if photo_path: # photo_path was given but file not found
+                 logging.warning(f"Photo path {photo_path} provided but file not found. Sending text message instead.")
+            sent_message = await bot_instance.send_message(chat_id=chat_id, text=message_text, parse_mode='MarkdownV2')
+            logging.info(f"Telegram API ACKNOWLEDGED sending TEXT message to Chat ID: {chat_id}. Message ID: {sent_message.message_id}, Text: \"{sent_message.text[:50].replace(chr(10), ' ')}...\"")
         return True # Indicate success
     except TelegramError as e: # Specific Telegram error
         logging.error(f"TelegramError sending message to {chat_id}: {e.message}")
         # Check for common errors like bot blocked or chat not found
-        if "bot was blocked by the user" in str(e) or "chat not found" in str(e):
+        error_str = str(e).lower()
+        if "bot was blocked by the user" in error_str or "chat not found" in error_str:
             logging.warning(f"Bot may have been blocked or chat ID {chat_id} is invalid.")
-        elif "group chat was upgraded to a supergroup chat" in str(e):
+        elif "group chat was upgraded to a supergroup chat" in error_str:
             logging.warning(f"Group chat {chat_id} was upgraded. New chat ID might be needed: {e.message}")
     except Exception as e: # Catch other potential errors during sending
         logging.error(f"Unexpected error sending Telegram message to {chat_id}: {e}")
@@ -196,8 +208,8 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                                                 seat_info_lines.append(f"FILA: {row_num_str}")
                                                 if isinstance(seat_list, list) and seat_list:
                                                     # Join multiple seats if present, or take the first
-                                                    asientos_str = escape_markdown_v2(", ".join(seat_list))
-                                                    seat_info_lines.append(f"ASIENTO: {asientos_str}")
+                                                    raw_asientos_str = ", ".join(seat_list) # Not escaped here
+                                                    seat_info_lines.append(f"ASIENTO: {raw_asientos_str}")
                                                 break # Assuming one row per place for this offer
                                         break # Assuming one place structure per group for this offer
                                 break # Found matching group
@@ -207,6 +219,60 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                     escaped_date = escape_markdown_v2(event_date_str)
                     escaped_price = escape_markdown_v2(calculated_price_str)
                     event_link = f"https://www.ticketmaster.es/event/{event_id}"
+
+                    # --- Determine Image to Send ---
+                    image_to_send_path = None
+                    offer_desc_lower = offer_type_description.lower()
+
+                    # 1. Pista/Gold Check
+                    if 'pista' in offer_desc_lower or 'floor' in offer_desc_lower:
+                        pista_image_path = os.path.join(SOURCES_DIR, "pista.jpg")
+                        if os.path.exists(pista_image_path):
+                            image_to_send_path = pista_image_path
+                        else:
+                            logging.warning(f"{pista_image_path} not found.")
+                    elif 'gold' in offer_desc_lower or 'golden' in offer_desc_lower:
+                        golden_image_path = os.path.join(SOURCES_DIR, "golden.jpg")
+                        if os.path.exists(golden_image_path):
+                            image_to_send_path = golden_image_path
+                        else:
+                            logging.warning(f"{golden_image_path} not found.")
+
+                    # 2. Sector Check (if no Pista/Gold match and sector info is available)
+                    if not image_to_send_path and seat_info_lines:
+                        extracted_sector_value_for_image = None
+                        for line in seat_info_lines: # seat_info_lines contains raw, unescaped strings here
+                            if line.startswith("SECTOR:"):
+                                try:
+                                    sector_part_str = line.split(":", 1)[1].strip()
+                                    sector_digits_match = re.search(r'\d+', sector_part_str)
+                                    if sector_digits_match:
+                                        extracted_sector_value_for_image = int(sector_digits_match.group(0))
+                                        break 
+                                except (IndexError, ValueError) as e_parse:
+                                    logging.warning(f"Could not parse sector for image from line '{line}': {e_parse}")
+                        
+                        if extracted_sector_value_for_image is not None:
+                            candidate_image_numbers = []
+                            if os.path.exists(SOURCES_DIR) and os.path.isdir(SOURCES_DIR):
+                                for filename in os.listdir(SOURCES_DIR):
+                                    if filename.lower().endswith(".jpg"):
+                                        base_name = filename[:-4] 
+                                        if base_name.isdigit():
+                                            img_num = int(base_name)
+                                            if img_num <= extracted_sector_value_for_image:
+                                                candidate_image_numbers.append(img_num)
+                            if candidate_image_numbers:
+                                best_match_num = max(candidate_image_numbers)
+                                potential_image_path = os.path.join(SOURCES_DIR, f"{best_match_num}.jpg")
+                                if os.path.exists(potential_image_path):
+                                    image_to_send_path = potential_image_path
+                                else:
+                                    logging.warning(f"Constructed sector image path {potential_image_path} does not exist.")
+                            else:
+                                logging.info(f"No suitable sector image (<= value) found for sector {extracted_sector_value_for_image} in {SOURCES_DIR}")
+                        else:
+                            logging.info(f"No Pista/Gold image match, and sector value not determined from seat_info for image lookup.")
 
                     # Construct the message header
                     header_line = f"*{escaped_offer_type}* [{escaped_date}]({event_link})" # Date as hyperlink
@@ -227,7 +293,7 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                     # Send to all configured chat IDs
                     any_message_sent_successfully = False
                     for chat_id_to_send_to in telegram_chat_id_to_send: # telegram_chat_id_to_send is now a list
-                        if await send_telegram_message_to_single_chat(bot_instance, chat_id_to_send_to, message_to_send):
+                        if await send_telegram_message_to_single_chat(bot_instance, chat_id_to_send_to, message_to_send, photo_path=image_to_send_path):
                             any_message_sent_successfully = True
                     if any_message_sent_successfully and current_offer_id: # Only add to seen if sent to at least one
                         seen_offer_ids.add(current_offer_id)

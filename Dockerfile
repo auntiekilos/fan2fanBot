@@ -16,5 +16,7 @@ COPY main.py .
 # Make port 80 available to the world outside this container (if needed for webhooks, not for polling)
 # EXPOSE 80 
 
+COPY sources /app/sources/
+
 # Run main.py when the container launches
 CMD ["python", "main.py"]
