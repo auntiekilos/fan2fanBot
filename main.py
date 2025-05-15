@@ -22,7 +22,7 @@ EVENT_DATES = ['30/05/26', '31/05/26', '02/06/26', '03/06/26', '06/06/26', '07/0
 # The JSON structure representing an "empty" response (no data)
 EMPTY_RESPONSE = {"groups": [], "offers": []}  # <<< ADJUST IF THE EMPTY RESPONSE IS DIFFERENT
 # How often to check the API, in seconds
-CHECK_INTERVAL_SECONDS = 100  # <<< YOU CAN CHANGE THIS
+CHECK_INTERVAL_SECONDS = 45  # <<< YOU CAN CHANGE THIS
 # Minimum and maximum delay (in seconds) to add *before* each request
 MIN_DELAY = 2
 MAX_DELAY = 9
