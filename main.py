@@ -27,7 +27,7 @@ CHECK_INTERVAL_SECONDS = 45  # <<< YOU CAN CHANGE THIS
 MIN_DELAY = 2
 MAX_DELAY = 9
 # Maximum price for an offer to be considered for notification
-MAX_PRICE_THRESHOLD = 400.00 # <<< SET YOUR DESIRED MAX PRICE HERE
+MAX_PRICE_THRESHOLD = 250.00 # <<< SET YOUR DESIRED MAX PRICE HERE
 SOURCES_DIR = "/app/sources" # Directory for images (pista.jpg, golden.jpg, 100.jpg, etc.)
 # Telegram Configuration (to be set via environment variables)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
