@@ -134,12 +134,18 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
     """
     current_api_url = API_URL_TEMPLATE.format(event_id=event_id)
     try:
+        # Construct a plausible referer URL to make the request look more legitimate
+        referer_url = f"https://www.ticketmaster.es/event/{event_id}"
         headers = {
             'User-Agent': random.choice(USER_AGENTS),
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.5',
             'Connection': 'keep-alive',
+            'Referer': referer_url,
+            'Origin': 'https://www.ticketmaster.es',
+            'DNT': '1', # Do Not Track header, common in browsers
         }
+
         # requests.get is a blocking call. In a fully async app, you'd use aiohttp or run this in an executor.
         response = requests.get(current_api_url, headers=headers, timeout=30)
         response.raise_for_status()
