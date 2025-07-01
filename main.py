@@ -146,8 +146,26 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
             'DNT': '1', # Do Not Track header, common in browsers
         }
 
-        # requests.get is a blocking call. In a fully async app, you'd use aiohttp or run this in an executor.
-        response = requests.get(current_api_url, headers=headers, timeout=30)
+        # --- Proxy Integration ---
+        # Replace with your Decodo proxy address and port.
+        # Consider moving this to environment variables as well.
+        proxy_host = os.getenv("PROXY_HOST")
+        proxy_port = os.getenv("PROXY_PORT")
+        proxy_user = os.getenv("PROXY_USER") # If your proxy requires authentication
+        proxy_pass = os.getenv("PROXY_PASS")
+
+        if proxy_host and proxy_port:
+            proxies = {
+                "http": f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}" if proxy_user and proxy_pass else f"http://{proxy_host}:{proxy_port}",
+                "https": f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}" if proxy_user and proxy_pass else f"http://{proxy_host}:{proxy_port}",
+            }
+            logging.info(f"Using proxy: {proxies}")
+        else:
+            proxies = None
+            logging.warning("Proxy not configured. Requests will be made without a proxy.")
+
+        # requests.get is a blocking call. In a fully async app, you'd use aiohttp or run this in an executor.        
+        response = requests.get(current_api_url, headers=headers, timeout=30, proxies=proxies)
         response.raise_for_status()
 
         try:
@@ -309,8 +327,12 @@ async def check_api_for_event(bot_instance, telegram_chat_id_to_send, event_id, 
                         await asyncio.sleep(1) # Use asyncio.sleep
             elif data != EMPTY_RESPONSE:
                 logging.warning(f"Data found for event ID {event_id} (linked to date {event_date_str}), but no 'offers' array or it's empty. Raw data structure: {json.dumps(data)}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Network error fetching {current_api_url}: {e}")
+    except requests.exceptions.HTTPError as http_err: # Catch HTTP errors (like 403) specifically
+        logging.error(f"HTTP error fetching {current_api_url}: {http_err}")
+        if http_err.response.status_code == 403: # Check for 403 Forbidden
+            logging.warning(f"Received 403 Forbidden. IP may be blocked. Ensure your proxy is working correctly or consider rotating proxies.")
+    except requests.exceptions.RequestException as req_err: # Broader request exceptions (network issues, etc.)
+        logging.error(f"Request error fetching {current_api_url}: {req_err}")
         logging.error(f"This was for event ID {event_id} (linked to date {event_date_str}).")
     except Exception as e:
         logging.error(f"An unexpected error occurred while processing event ID {event_id} (date {event_date_str}): {e}")
